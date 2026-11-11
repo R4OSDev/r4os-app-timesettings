@@ -1,19 +1,16 @@
+const std = @import("std");
 const r4os = @import("r4os");
 const r4std = @import("r4std");
 const AppApi = struct {
     sys: r4os.r4sys.Context,
     desk: r4os.r4desk.Context,
     draw: r4os.r4draw.Context,
-    net: r4os.r4net.Context,
-    dev: r4os.r4dev.Context,
 
-    fn init(r4_app: *r4os.App) ?AppApi {
+    fn init(r4_app: *r4os.App2) ?AppApi {
         return .{
             .sys = r4_app.system(),
             .desk = r4_app.desktop() orelse return null,
             .draw = r4_app.drawing() orelse return null,
-            .net = r4_app.networkLowLevel() orelse return null,
-            .dev = r4_app.devicesLowLevel() orelse return null,
         };
     }
 };
@@ -51,8 +48,8 @@ const focus_items = [_]r4os.gui.FocusItem{
     .{},
 };
 
-pub fn r4_app_main(r4_app: *r4os.App) i32 {
-    if (!r4std.init(r4_app.startContext())) return r4os.abi.err_no_group;
+pub fn r4_app_main(r4_app: *r4os.App2) i32 {
+    if (!r4std.init2(r4_app.startContext())) return r4os.abi.err_no_group;
     var ctx = AppApi.init(r4_app) orelse return r4os.abi.err_no_group;
     if (hasArg(ctx.sys.argsRaw(), "/SELFTEST")) return runSelfTest(&ctx.sys);
     var app = App{ .ctx = &ctx };
@@ -101,7 +98,7 @@ const App = struct {
                     const kind: r4os.abi.GuiEventKind = @enumFromInt(event.kind);
                     switch (kind) {
                         .close => return 0,
-                        .resize => {
+                        .resize, .font_changed => {
                             self.updateMetrics();
                             self.render();
                         },
@@ -126,7 +123,7 @@ const App = struct {
 
     fn loadConfig(self: *App) void {
         var status: r4os.abi.TimeServiceStatus = .{};
-        if (self.ctx.sys.timeServiceStatus(&status) == r4os.abi.service_api_result_ok and status.timezone_index < @as(u32, @intCast(r4std.time.zoneCount()))) {
+        if (timeRequest(&self.ctx.sys, null, &status) == r4os.abi.service_api_result_ok and status.timezone_index < @as(u32, @intCast(r4std.time.zoneCount()))) {
             self.config.setIndex(@intCast(status.timezone_index));
             self.config.setClockFormat(status.clock_format);
             self.selected_index = self.config.selectedIndex();
@@ -354,7 +351,7 @@ const App = struct {
     }
 
     fn apply(self: *App, close_on_success: bool) void {
-        if (!self.applyViaService(close_on_success)) self.setStatus("TIMESVC save failed.");
+        if (!self.applyViaService(close_on_success)) self.setStatus("TIMESVC save unconfirmed. Reload before retrying.");
     }
 
     fn applyViaService(self: *App, close_on_success: bool) bool {
@@ -373,7 +370,7 @@ const App = struct {
                 r4os.abi.time_service_config_flag_date,
         };
         var status: r4os.abi.TimeServiceStatus = .{};
-        const rc = self.ctx.sys.timeServiceSetConfig(&request, &status);
+        const rc = timeRequest(&self.ctx.sys, &request, &status);
         if (rc != r4os.abi.service_api_result_ok) return false;
         self.config.setIndex(@intCast(status.timezone_index));
         self.config.setClockFormat(status.clock_format);
@@ -568,7 +565,7 @@ fn runSelfTest(ctx: *const r4os.r4sys.Context) i32 {
     ctx.println("TIMESET selftest");
     if (!ensureTimeService(ctx)) return fail(ctx, "timesvc");
     var original: r4os.abi.TimeServiceStatus = .{};
-    if (ctx.timeServiceStatus(&original) != r4os.abi.service_api_result_ok) return fail(ctx, "status");
+    if (timeRequest(ctx, null, &original) != r4os.abi.service_api_result_ok) return fail(ctx, "status");
     const restore_index = original.timezone_index;
     const restore_format = original.clock_format;
     const restore_year = original.local_year;
@@ -586,24 +583,24 @@ fn runSelfTest(ctx: *const r4os.r4sys.Context) i32 {
                 r4os.abi.time_service_config_flag_clock_format |
                 r4os.abi.time_service_config_flag_date,
         };
-        _ = ctx.timeServiceSetConfig(&request, &ignored);
+        _ = timeRequest(ctx, &request, &ignored);
     }
 
     const berlin = r4std.time.indexForId("Europe/Berlin") orelse return fail(ctx, "berlin-index");
     var status: r4os.abi.TimeServiceStatus = .{};
-    if (ctx.timeServiceSetTimezone(@intCast(berlin), &status) != r4os.abi.service_api_result_ok) return fail(ctx, "save");
+    if (timeRequest(ctx, &.{ .timezone_index = @intCast(berlin), .flags = r4os.abi.time_service_config_flag_timezone_index }, &status) != r4os.abi.service_api_result_ok) return fail(ctx, "save");
     if (status.timezone_index != @as(u32, @intCast(berlin))) return fail(ctx, "status-index");
 
     var buffer: [384]u8 = undefined;
     const len = ctx.fileRead(r4std.settings.paths.time, buffer[0..]);
     if (len <= 0 or !contains(buffer[0..@intCast(len)], "TIMEZONE=Europe/Berlin")) return fail(ctx, "file");
 
-    if (ctx.timeServiceSetClockFormat(r4os.abi.clock_format_12h, &status) != r4os.abi.service_api_result_ok) return fail(ctx, "format-save");
+    if (timeRequest(ctx, &.{ .clock_format = r4os.abi.clock_format_12h, .flags = r4os.abi.time_service_config_flag_clock_format }, &status) != r4os.abi.service_api_result_ok) return fail(ctx, "format-save");
     if (@as(u32, status.clock_format) != r4os.abi.clock_format_12h) return fail(ctx, "format-status");
 
-    if (ctx.timeServiceSetDate(2026, 5, 14, &status) != r4os.abi.service_api_result_ok) return fail(ctx, "date-save");
+    if (timeRequest(ctx, &.{ .date_year = 2026, .date_month = 5, .date_day = 14, .flags = r4os.abi.time_service_config_flag_date }, &status) != r4os.abi.service_api_result_ok) return fail(ctx, "date-save");
     if (status.local_year != 2026 or status.local_month != 5 or status.local_day != 14) return fail(ctx, "date-status");
-    if (ctx.timeServiceSetDate(2026, 2, 29, &status) == r4os.abi.service_api_result_ok) return fail(ctx, "bad-date");
+    if (timeRequest(ctx, &.{ .date_year = 2026, .date_month = 2, .date_day = 29, .flags = r4os.abi.time_service_config_flag_date }, &status) == r4os.abi.service_api_result_ok) return fail(ctx, "bad-date");
 
     ctx.println("TIMESET selftest: OK");
     return 0;
@@ -685,6 +682,101 @@ fn spanZ(buffer: []const u8) []const u8 {
     return buffer[0..len];
 }
 
+// One checked absolute budget covers connection admission and the exact RPC.
+// A mutation timeout is returned without replaying the configuration request.
+fn timeRequest(ctx: *const r4os.r4sys.Context, request: ?*const r4os.abi.TimeServiceConfig, output: *r4os.abi.TimeServiceStatus) i32 {
+    const context = ctx.base.generation2 orelse return r4os.abi.err_no_group;
+    const clock = r4os.inventory_reader.PlatformClock.fromContext2(context) catch return r4os.abi.err_no_fn;
+    var budget = r4os.rpc_budget.Budget.fromTimeout(clock.read, r4os.time_contract.timeoutFinite(.{ .nanoseconds = 1_000_000_000 })) catch |err| return r4os.rpc_budget.code(err);
+    const services = r4os.app_services.Services{ .sys = ctx.* };
+    var connection = switch (services.open("TIMESVC")) {
+        .connection => |value| value,
+        .failure => |code| return code,
+    };
+    defer if (connection.valid()) {
+        _ = connection.close();
+    };
+    const payload = if (request) |value| std.mem.asBytes(value) else "";
+    const operation = if (request != null) r4os.abi.time_service_op_set_config else r4os.abi.time_service_op_status;
+    var response: r4os.abi.TimeServiceStatus = undefined;
+    switch (connection.callBudget(operation, payload, std.mem.asBytes(&response), &budget)) {
+        .response => |result| if (result.bytes != @sizeOf(r4os.abi.TimeServiceStatus)) return r4os.abi.service_api_result_buffer_too_small,
+        .timed_out => return r4os.abi.service_api_result_timeout,
+        .remote_failure, .failure => |code| return code,
+    }
+    if (response.magic != r4os.abi.time_service_status_magic or response.version != r4os.abi.time_service_status_version or
+        response.timezone_index >= r4std.time.zoneCount() or
+        (response.clock_format != r4os.abi.clock_format_12h and response.clock_format != r4os.abi.clock_format_24h)) return r4os.abi.service_api_result_invalid;
+    const closed = connection.close();
+    if (closed != r4os.abi.service_api_result_ok) return closed;
+    output.* = response;
+    return r4os.abi.service_api_result_ok;
+}
+
+test "migration time RPC rejects unavailable clocks and retains unknown mutation outcomes" {
+    const a = r4os.abi;
+    const Peer = struct {
+        var clock_available = false;
+        var short_reply = false;
+        var opened: usize = 0;
+        var calls: usize = 0;
+        var closed: usize = 0;
+        fn clock(output: *a.MonotonicClockInfo) callconv(.c) i32 {
+            if (!clock_available) return 0;
+            output.* = .{ .flags = a.monotonic_clock_flag_valid, .source = 1, .generation = 7, .instant_ns = 1_000_000_000, .resolution_ns = 1, .event_requested_hz = 1000, .event_effective_hz = 1000 };
+            return 1;
+        }
+        fn open(_: [*:0]const u8, output: *a.ServiceInfo) callconv(.c) i32 {
+            opened += 1;
+            output.* = .{ .handle = 7 };
+            return a.service_api_result_ok;
+        }
+        fn close(handle: u32) callconv(.c) i32 {
+            if (handle != 7) return a.service_api_result_bad_handle;
+            closed += 1;
+            return a.service_api_result_ok;
+        }
+        fn call(handle: u32, op: u16, _: [*]const u8, size: u32, header: *a.ServiceMessageHeader, output: [*]u8, capacity: u32, timeout: u64) callconv(.c) i32 {
+            calls += 1;
+            if (handle != 7 or op != a.time_service_op_set_config or size != @sizeOf(a.TimeServiceConfig) or timeout == 0 or timeout == a.io_wait_forever) return a.service_api_result_invalid;
+            header.* = .{};
+            if (short_reply) {
+                if (capacity == 0) return a.service_api_result_invalid;
+                output[0] = 0;
+                return 1;
+            }
+            return a.service_api_result_timeout;
+        }
+    };
+    Peer.clock_available = false;
+    Peer.short_reply = false;
+    Peer.opened = 0;
+    Peer.calls = 0;
+    Peer.closed = 0;
+    const platform = r4os.platform2;
+    var table = platform.abi.R4XStartR4Sys2{ .monotonic_clock = @intFromPtr(&Peer.clock), .service_open = @intFromPtr(&Peer.open), .service_close = @intFromPtr(&Peer.close), .service_call = @intFromPtr(&Peer.call) };
+    const imports = [_]platform.abi.R4XStartImport{.{ .group_id = 1, .resolved_version = 2, .table = @intFromPtr(&table) }};
+    const raw = platform.abi.R4XStartContext2{ .import_count = 1, .imports = @intFromPtr(&imports) };
+    const context = try platform.Context.init(&raw);
+    const sys = r4os.r4sys.Context.fromProgram(.{ .generation2 = &context });
+    const request = a.TimeServiceConfig{ .clock_format = a.clock_format_12h, .flags = a.time_service_config_flag_clock_format };
+    var output: a.TimeServiceStatus = .{};
+    output.last_error[0] = 'Q';
+    const before = output;
+    try std.testing.expectEqual(r4os.rpc_budget.code(error.ClockUnavailable), timeRequest(&sys, &request, &output));
+    try std.testing.expectEqual(@as(usize, 0), Peer.opened);
+    Peer.clock_available = true;
+    try std.testing.expectEqual(a.service_api_result_timeout, timeRequest(&sys, &request, &output));
+    try std.testing.expectEqual(@as(usize, 1), Peer.calls);
+    try std.testing.expectEqual(@as(usize, 1), Peer.closed);
+    try std.testing.expectEqualDeep(before, output);
+    Peer.short_reply = true;
+    try std.testing.expectEqual(a.service_api_result_buffer_too_small, timeRequest(&sys, &request, &output));
+    try std.testing.expectEqual(@as(usize, 2), Peer.calls);
+    try std.testing.expectEqual(@as(usize, 2), Peer.closed);
+    try std.testing.expectEqualDeep(before, output);
+}
+
 fn ensureTimeService(ctx: *const r4os.r4sys.Context) bool {
     if (!ctx.hasFn("service_start") or !ctx.hasFn("service_call")) return false;
     var info: r4os.abi.ServiceInfo = .{};
@@ -695,7 +787,7 @@ fn ensureTimeService(ctx: *const r4os.r4sys.Context) bool {
         if (start != r4os.abi.service_api_result_ok and start != r4os.abi.service_api_result_running) return false;
     }
     var svc_status: r4os.abi.TimeServiceStatus = .{};
-    return ctx.timeServiceStatus(&svc_status) == r4os.abi.service_api_result_ok;
+    return timeRequest(ctx, null, &svc_status) == r4os.abi.service_api_result_ok;
 }
 
 fn fail(ctx: *const r4os.r4sys.Context, label: []const u8) i32 {

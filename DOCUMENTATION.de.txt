@@ -23,3 +23,12 @@ Contract:
 - R4L-Imports: `R4DESK:Query:1`, `R4DRAW:Query:1`,
   `R4STD:DATE_V1:1`, `R4STD:TIME_V1:1`
 - Zielpfad im Image: `C:\R4OS\SOFTWARE\DESKTOP\TIMESET.R4X`
+
+API-Migration 0.90.67
+---------------------
+TimeSettings9 verwendet App2/Query2 und die bestehenden DATE_V1-/TIME_V1-
+Libraryvertraege. TIMESVC wird ueber gemeinsame ServiceConnection mit einem
+geprueften absoluten Sekundenbudget angesprochen. Vollstaendige gepruefte
+Antwort und quittiertes Close gehen der Uebernahme voraus. Jede Mutation wird
+einmal gesendet. Unbestaetigtes Speichern behaelt das Fenster und fordert
+Neuladen. Fontwechsel baut Canvas und Layout neu auf.

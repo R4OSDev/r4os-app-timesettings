@@ -20,7 +20,7 @@ Ergebnis:
 Contract:
 - R4XStart-Entry: `timeset_main`
 - App-Klasse: `gui`
-- R4L-Imports: `R4DESK:Query:1`, `R4DRAW:Query:1`,
+- Platform-Imports: `R4DESK:Query2:2`, `R4DRAW:Query2:2`,
   `R4STD:DATE_V1:1`, `R4STD:TIME_V1:1`
 - Zielpfad im Image: `C:\R4OS\SOFTWARE\DESKTOP\TIMESET.R4X`
 
